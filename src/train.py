@@ -9,6 +9,7 @@ import pandas as pd
 import torchvision.transforms as transforms
 import os
 import sys
+from monai.transforms import Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged, ToTensord, Resized
 
 # --- TQDM KÜTÜPHANESİNİ İÇERİ AKTARMA ---
 from tqdm import tqdm
@@ -18,7 +19,8 @@ PROJE_ANA_DIZINI = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJE_ANA_DIZINI not in sys.path:
     sys.path.append(PROJE_ANA_DIZINI)
 
-from src.data_utils import HeadCTDataset, collate_fn_skip_corrupted
+from src.data_utils import HeadCTDatasetMONAI as HeadCTDataset
+from src.data_utils import collate_fn_skip_corrupted
 from src.model import get_model
 
 # --- 1. AYARLAR VE HİPERPARAMETRELER ---
@@ -39,12 +41,26 @@ def main():
     print(f"Eğitim verisi boyutu: {len(train_df)}")
     print(f"Validasyon verisi boyutu: {len(val_df)}")
 
-    data_transforms = transforms.Compose([
-        transforms.ToPILImage(),
-        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.5], std=[0.5])
-    ])
+    # --- YENİ MONAI transforms ---
+    # MONAI genellikle sözlükler üzerinde çalışır, 'd' soneki bunu belirtir.
+    # Keys parametresi hangi anahtara (key) uygulanacağını söyler ('image').
+    data_transforms = Compose([
+        # LoadImaged: Verilen 'image' anahtarındaki dosya yolundan görüntüyü yükler.
+        # reader="PydicomReader": pydicom kullanarak okumasını sağlar (kurulu olmalı)
+        LoadImaged(keys='image', reader="PydicomReader", image_only=True), 
+        # EnsureChannelFirstd: Görüntüye kanal boyutunu ekler (H, W) -> (1, H, W).
+        EnsureChannelFirstd(keys='image'),
+        # Resized: Görüntüyü yeniden boyutlandırır.
+        Resized(keys='image', spatial_size=(IMAGE_SIZE, IMAGE_SIZE)),
+        # ScaleIntensityRanged: Piksel yoğunluklarını belirli bir aralığa (örn: -1 ile 1) ölçekler.
+        # a_min/a_max: Orijinal görüntüdeki beklenen min/max yoğunluk (BT için Hounsfield Unit - HU - değerleri kullanılır, 
+        #             ancak veri setini tam bilmediğimiz için şimdilik geniş bir aralık kullanalım, örn: -1000, 1000)
+        # b_min/b_max: Hedef aralık (genellikle -1.0, 1.0 veya 0.0, 1.0)
+        # clip=True: Aralığın dışındaki değerleri kırpar.
+        ScaleIntensityRanged(keys='image', a_min=-1000, a_max=1000, b_min=-1.0, b_max=1.0, clip=True),
+        # ToTensord: NumPy array'ini PyTorch tensörüne çevirir.
+        ToTensord(keys='image') 
+        ])
 
     train_dataset = HeadCTDataset(train_df.reset_index(drop=True), transform=data_transforms)
     val_dataset = HeadCTDataset(val_df.reset_index(drop=True), transform=data_transforms)
@@ -69,7 +85,7 @@ def main():
         
         # --- EĞİTİM DÖNGÜSÜNÜ TQDM İLE SARMA ---
         model.train()
-        train_loss, train_correct = 0.0, 0
+        train_loss, train_correct = 0.0, 0.0
         for images, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Eğitim]"):
             images, labels = images.to(device), labels.to(device)
             if images.nelement() == 0: continue # Boş batch'leri atla
@@ -82,11 +98,11 @@ def main():
             
             train_loss += loss.item() * images.size(0)
             _, preds = torch.max(outputs, 1)
-            train_correct += torch.sum(preds == labels.data)
+            train_correct += torch.sum(preds == labels.data).item()
 
         # --- VALİDASYON DÖNGÜSÜNÜ TQDM İLE SARMA ---
         model.eval()
-        val_loss, val_correct = 0.0, 0
+        val_loss, val_correct = 0.0, 0.0
         with torch.no_grad():
             for images, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{EPOCHS} [Validasyon]"):
                 images, labels = images.to(device), labels.to(device)
@@ -97,13 +113,13 @@ def main():
                 
                 val_loss += loss.item() * images.size(0)
                 _, preds = torch.max(outputs, 1)
-                val_correct += torch.sum(preds == labels.data)
+                val_correct += torch.sum(preds == labels.data).item()
 
         # Epoch sonu istatistikleri
         avg_train_loss = train_loss / len(train_loader.dataset)
-        train_accuracy = train_correct.double() / len(train_loader.dataset)
+        train_accuracy = train_correct / len(train_loader.dataset)
         avg_val_loss = val_loss / len(val_loader.dataset)
-        val_accuracy = val_correct.double() / len(val_loader.dataset)
+        val_accuracy = val_correct / len(val_loader.dataset)
         
         print(f"Eğitim Kaybı: {avg_train_loss:.4f} | Eğitim Doğruluğu: {train_accuracy:.4f}")
         print(f"Validasyon Kaybı: {avg_val_loss:.4f} | Validasyon Doğruluğu: {val_accuracy:.4f}")
