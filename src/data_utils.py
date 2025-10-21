@@ -29,14 +29,13 @@ class HeadCTDatasetMONAI(Dataset):
     def __getitem__(self, idx):
         # idx'deki sözlüğü al
         data_item = self.file_list[idx]
+        dicom_path = os.path.abspath(data_item['image'])
+
+        if not os.path.exists(dicom_path):
+            print(f"⚠️ DICOM dosyası bulunamadı: {dicom_path}")
+            return None
         
-        # --- ÖNEMLİ DEĞİŞİKLİK ---
-        # DICOM okumayı ve temel işlemleri MONAI transformlarına bırakıyoruz.
-        # Bu, daha temiz ve MONAI standardına uygun bir yoldur.
-        
-        # 'image' anahtarını (dosya yolu) içeren bir sözlük oluştur
-        # Dönüşüm zinciri bu sözlüğü işleyecek
-        data_dict = {'image': data_item['image'], 'label': data_item['label']}
+        data_dict = {'image': dicom_path, 'label': int(data_item['label'])}
 
         # Tanımlanmışsa dönüşüm zincirini uygula
         if self.transform:
